@@ -4,6 +4,7 @@ edition = "2024.beta"
 
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "testnet-v1.66.2" }
+singuvault = { local = "../../../singuvault-contracts/move-contracts/singuvault" }
 # world = { local = "../../../world-contracts/contracts/world" }
 # World dependency commented out for initial deployment (SinguHunt core is standalone)
 # Re-enable when integrating with EVE Frontier SSU extensions

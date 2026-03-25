@@ -7,12 +7,15 @@
 /// 4. Collect the required number of Singu and deposit them at the end gate
 /// 5. Earn a permanent, non-transferable achievement NFT
 module singuhunt::singuhunt {
+    use sui::balance::{Self, Balance};
     use sui::clock::{Self, Clock};
+    use sui::coin::{Self, Coin};
     use sui::dynamic_field;
     use sui::event;
     use sui::hash;
     use sui::table::{Self, Table};
     use sui::bcs;
+    use singuvault::lux::LUX;
     use singuhunt::sig_verify;
 
     // ============ Error Codes ============
@@ -55,6 +58,7 @@ module singuhunt::singuhunt {
     const E_TEAM_ALREADY_FINISHED: u64 = 37;
     const E_NOT_TEAM_MODE: u64 = 38;
     const E_INVALID_REVEAL_TIME: u64 = 39;
+    const E_INVALID_REGISTRATION_FEE: u64 = 40;
 
     // ============ Constants ============
     const DRAGON_BALL_COUNT: u64 = 7;
@@ -70,6 +74,13 @@ module singuhunt::singuhunt {
     const MODE_DEEP_DECRYPT: u8 = 3;
     const MODE_LARGE_ARENA: u8 = 4;
     const MODE_OBSTACLE_RUN: u8 = 5;
+
+    // Registration fee schedule in LUX smallest units (9 decimals)
+    const REG_FEE_SOLO_RACE: u64 = 12_000_000_000;     // 12 LUX
+    const REG_FEE_TEAM_RACE: u64 = 15_000_000_000;     // 15 LUX
+    const REG_FEE_DEEP_DECRYPT: u64 = 30_000_000_000;  // 30 LUX
+    const REG_FEE_LARGE_ARENA: u64 = 22_000_000_000;   // 22 LUX
+    const REG_FEE_OBSTACLE_RUN: u64 = 18_000_000_000;  // 18 LUX
 
     // ============ Dynamic Field Keys ============
 
@@ -212,9 +223,12 @@ module singuhunt::singuhunt {
         ticket_signer: address,
         /// Track used claim tickets by digest to block replay attacks
         used_claim_tickets: Table<address, bool>,
+        /// Accumulated registration fees collected in LUX
+        registration_fee_pool: Balance<LUX>,
         /// Stats
         total_achievements: u64,
         total_hunts: u64,
+        total_lux_collected: u64,
     }
 
     /// Dragon Ball token - collected at gate locations
@@ -313,12 +327,18 @@ module singuhunt::singuhunt {
         next_epoch: u64,
         mode: u8,
         reg_end_time: u64,
+        registration_fee_lux: u64,
     }
 
     public struct PlayerRegistered has copy, drop {
         next_epoch: u64,
         player: address,
         reg_count: u64,
+        fee_paid_lux: u64,
+    }
+
+    public struct RegistrationFeesWithdrawn has copy, drop {
+        amount: u64,
     }
 
     public struct TeamRegistrationFinalized has copy, drop {
@@ -381,8 +401,10 @@ module singuhunt::singuhunt {
             achievement_holders: table::new(ctx),
             ticket_signer: @0x0,
             used_claim_tickets: table::new(ctx),
+            registration_fee_pool: balance::zero(),
             total_achievements: 0,
             total_hunts: 0,
+            total_lux_collected: 0,
         };
         transfer::share_object(game_state);
     }
@@ -592,18 +614,27 @@ module singuhunt::singuhunt {
             *dynamic_field::borrow_mut(&mut game.id, TeamRegistrationFinalizedKey { epoch: next_epoch }) = false;
         };
 
-        event::emit(RegistrationOpened { next_epoch, mode, reg_end_time: reg_end_time_ms });
+        event::emit(RegistrationOpened {
+            next_epoch,
+            mode,
+            reg_end_time: reg_end_time_ms,
+            registration_fee_lux: registration_fee_for_mode(mode),
+        });
     }
 
     /// Player registers for the upcoming hunt session.
     public entry fun register_for_hunt(
         game: &mut GameState,
+        fee_coin: Coin<LUX>,
         clock: &Clock,
         ctx: &mut TxContext,
     ) {
         let now = clock::timestamp_ms(clock);
         let player = ctx.sender();
         let next_epoch = game.current_epoch + 1;
+        let mode = *dynamic_field::borrow<RegModeKey, u8>(&game.id, RegModeKey {});
+        let required_fee = registration_fee_for_mode(mode);
+        let paid_fee = coin::value(&fee_coin);
 
         // Check registration is open
         assert!(
@@ -621,9 +652,12 @@ module singuhunt::singuhunt {
             !dynamic_field::exists_(&game.id, RegPlayerKey { epoch: next_epoch, player }),
             E_ALREADY_REGISTERED,
         );
+        assert!(paid_fee == required_fee, E_INVALID_REGISTRATION_FEE);
 
         // Register player
         dynamic_field::add(&mut game.id, RegPlayerKey { epoch: next_epoch, player }, true);
+        balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
+        game.total_lux_collected = game.total_lux_collected + paid_fee;
 
         // Increment count
         let count = dynamic_field::borrow_mut<RegCountKey, u64>(&mut game.id, RegCountKey { epoch: next_epoch });
@@ -633,7 +667,23 @@ module singuhunt::singuhunt {
         dynamic_field::add(&mut game.id, RegPositionKey { epoch: next_epoch, player }, registration_index);
         dynamic_field::add(&mut game.id, RegOrderKey { epoch: next_epoch, order: registration_index }, player);
 
-        event::emit(PlayerRegistered { next_epoch, player, reg_count: registration_index });
+        event::emit(PlayerRegistered {
+            next_epoch,
+            player,
+            reg_count: registration_index,
+            fee_paid_lux: paid_fee,
+        });
+    }
+
+    public entry fun withdraw_registration_fees(
+        _admin: &AdminCap,
+        game: &mut GameState,
+        amount: u64,
+        ctx: &mut TxContext,
+    ) {
+        let withdrawn = balance::split(&mut game.registration_fee_pool, amount);
+        event::emit(RegistrationFeesWithdrawn { amount });
+        transfer::public_transfer(coin::from_balance(withdrawn, ctx), ctx.sender());
     }
 
     public entry fun finalize_team_registration(
@@ -1635,6 +1685,28 @@ module singuhunt::singuhunt {
         } else {
             0
         }
+    }
+
+    public fun registration_fee_for_mode(mode: u8): u64 {
+        if (mode == MODE_SOLO_RACE) {
+            REG_FEE_SOLO_RACE
+        } else if (mode == MODE_TEAM_RACE) {
+            REG_FEE_TEAM_RACE
+        } else if (mode == MODE_DEEP_DECRYPT) {
+            REG_FEE_DEEP_DECRYPT
+        } else if (mode == MODE_LARGE_ARENA) {
+            REG_FEE_LARGE_ARENA
+        } else {
+            REG_FEE_OBSTACLE_RUN
+        }
+    }
+
+    public fun total_lux_collected(game: &GameState): u64 {
+        game.total_lux_collected
+    }
+
+    public fun registration_fee_pool_balance(game: &GameState): u64 {
+        balance::value(&game.registration_fee_pool)
     }
 
     public fun get_team_count(game: &GameState, epoch: u64): u64 {
