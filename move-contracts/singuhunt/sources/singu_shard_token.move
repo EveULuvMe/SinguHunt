@@ -57,4 +57,27 @@ module singuhunt::singu_shard_token {
         let req = token::spend(shard, ctx);
         token::confirm_with_treasury_cap(&mut treasury.cap, req, ctx);
     }
+
+    #[test_only]
+    public fun new_for_testing(ctx: &mut TxContext): SinguShardTreasury {
+        let (treasury_cap, metadata) = coin::create_currency(
+            SINGU_SHARD_TOKEN {},
+            0,
+            b"SHARD",
+            b"Singu Shard",
+            b"Closed-loop gameplay shard for Singu Hunt",
+            option::none(),
+            ctx,
+        );
+        transfer::public_freeze_object(metadata);
+        SinguShardTreasury {
+            id: object::new(ctx),
+            cap: treasury_cap,
+        }
+    }
+
+    #[test_only]
+    public fun transfer_for_testing(treasury: SinguShardTreasury, owner: address) {
+        transfer::transfer(treasury, owner)
+    }
 }

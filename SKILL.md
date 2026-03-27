@@ -10,15 +10,15 @@ A blockchain-based scavenger hunt game built on Sui, played inside EVE Frontier'
 
 ## Daily Schedule (UTC+8)
 
-| Mode | Registration | Game Time | Duration |
-|------|-------------|-----------|----------|
-| 1. Solo Race | 08:50 - 08:59 | 09:00 - 09:30 | 30 min |
-| 2. Team Race | 09:50 - 09:59 | 10:00 - 10:30 | 30 min |
-| 3. Deep Decrypt | 10:50 - 10:59 | 11:00 - 12:00 | 60 min |
-| 4. Large Arena | 12:50 - 12:59 | 13:00 - 14:00 | 60 min |
-| 5. Obstacle Run | 14:20 - 14:29 | 14:30 - 15:00 | 30 min |
+| Mode | Registration (3 min) | Game Time | Duration |
+|------|---------------------|-----------|----------|
+| 1. Solo Race | 08:57 - 08:59 | 09:00 - 09:07 | 7 min |
+| 2. Team Race | 09:57 - 09:59 | 10:00 - 10:07 | 7 min |
+| 3. Deep Decrypt | 10:57 - 10:59 | 11:00 - 11:07 | 7 min |
+| 4. Large Arena | 12:57 - 12:59 | 13:00 - 13:12 | 12 min |
+| 5. Obstacle Run | 14:27 - 14:29 | 14:30 - 14:42 | 12 min |
 
-Registration opens 10 minutes before game start and closes 1 minute before.
+Registration opens 3 minutes before game start and closes 1 minute before.
 
 ---
 
@@ -40,6 +40,8 @@ Players race to collect all required Singu from mini gates and deliver them to t
 - Bulletin board module for announcements
 - Gate configuration scripts (configure-gates, set-assembly-url, find-assemblies)
 - Deliver-ticket API endpoint for end gate verification
+- Character ID registration: register_for_hunt stores CharacterRegKey(epoch, character_id) for turret lookup
+- Turret whitelist: Mode 1-4 registered players are whitelisted (not attacked) during active hunt
 
 **TODO:**
 - Deploy upgraded contract via upgrade capability
@@ -82,11 +84,25 @@ Awaiting k66's gameplay design specification.
 
 ### 5. Obstacle Run (MODE_OBSTACLE_RUN)
 
-Awaiting k66's gameplay design specification.
+Players must clear Mini Gate checkpoints **in sequential order** (gate 0 → 1 → 2) while turrets **actively attack registered participants**. This is the only mode where turrets target players instead of protecting them.
 
-**Completed:** Mode constant + registration/scheduling infrastructure.
+**Key mechanics:**
+- Sequential gate enforcement: contract checks `player_collected_count == shard_index` before allowing claim
+- Turret blacklist: registered players are attacked (Mode 1-4 whitelist is reversed)
+- Unregistered players are also attacked (same as other modes)
 
-**TODO:** Pending k66's detailed design.
+**Flow:** Register → Launch → Gate 0 → Gate 1 → Gate 2 (sequential) → Return to Home → Claim Achievement
+
+**Completed:**
+- Mode constant + registration/scheduling infrastructure
+- Sequential gate ordering in `collect_singu_shard` (E_INVALID_GATE_ORDER)
+- Turret blacklist logic in `singu_turret::get_target_priority_list`
+- `CharacterRegKey` dynamic field for turret character_id lookup
+- `is_character_registered(game, epoch, character_id)` public view function
+
+**TODO:**
+- Deploy upgraded singuhunt contract via upgrade capability
+- Deploy singu-turret contract to each turret assembly
 
 ---
 
@@ -125,19 +141,21 @@ k66 needs to build/deploy the following structures in EVE Frontier Utopia:
 
 Base URL: `https://singuhunt-proxy.k66inthesky.workers.dev`
 
-Upstream dApp: `https://dapp-seven-henna.vercel.app`
+Singu Hunt Home URL: `https://singuhunt-proxy.k66inthesky.workers.dev/singu-home?v=2`
+
+Singu Vault URL: `https://dapp-seven-henna.vercel.app/`
 
 ### Singu Hunt — Home (Start/End + Bulletin)
 
 | Slug | Assembly ID | In-Game URL |
 |------|-------------|-------------|
-| `singu-home` | `0xf27500312bd59533d7f99fd575efb0b798d81437066ae79212d880501cadacdd` | `https://singuhunt-proxy.k66inthesky.workers.dev/home?v=2` |
+| `singu-home` | `0xf27500312bd59533d7f99fd575efb0b798d81437066ae79212d880501cadacdd` | `https://singuhunt-proxy.k66inthesky.workers.dev/singu-home?v=2` |
 
 ### Singu Vault — Exchange SSU
 
 | Name | ROOT | Location | dApp URL |
 |------|------|----------|----------|
-| Singu Vault - Exchange | `1000000020459` | Next to Singu Hunt Home | `https://singuvault-dapp.vercel.app` (TBD: confirm after `vercel deploy`) |
+| Singu Vault - Exchange | `1000000020459` | Next to Singu Hunt Home | `https://dapp-seven-henna.vercel.app/` |
 
 > This is a **standalone SinguVault dApp** (not routed through singuhunt-proxy).
 > Future custom domain: `https://vault.eveuluv.me`

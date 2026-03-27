@@ -198,6 +198,20 @@ npx wrangler secret put EF_CONTEXT_SHARED_SECRET
 npx wrangler deploy
 ```
 
+本地驗證：
+
+```bash
+cd cloudflare-proxy
+npm run smoke
+```
+
+這支 smoke script 不會打外網，它會直接在本機驗證 Worker 的關鍵安全行為：
+
+1. `/api/gates/<slug>/claim-ticket` 會覆蓋外部偽造的 `x-ef-*`
+2. `/api/gates/<slug>/deliver-ticket` 也會注入同一組 trusted context
+3. `gate slug` 不存在時會回 `404`
+4. 一般 page route 不會誤注入 claim headers
+
 mini gate URL 應綁到 Worker 網域：
 
 ```text

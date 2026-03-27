@@ -1941,4 +1941,390 @@ module singuhunt::singuhunt {
     public fun get_team_count(game: &GameState, epoch: u64): u64 {
         load_team_count(game, epoch)
     }
+
+    #[test_only]
+    public(package) fun collect_singu_shard_for_testing(
+        game: &mut GameState,
+        shard_treasury: &mut SinguShardTreasury,
+        shard_index: u64,
+        assembly_id: address,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        let now = clock::timestamp_ms(clock);
+        let player = ctx.sender();
+        let epoch = game.current_epoch;
+
+        assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
+        assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
+        assert!(shard_index < game.shard_gates.length(), E_INVALID_BALL);
+
+        let gate = &game.shard_gates[shard_index];
+        assert!(gate.gate_id == assembly_id, E_ASSEMBLY_MISMATCH);
+
+        let hunt_mode = get_hunt_mode(game);
+        if (hunt_mode == MODE_TEAM_RACE) {
+            assert!(
+                dynamic_field::exists_(&game.id, TeamAssignmentKey { epoch, player }),
+                E_TEAM_ASSIGNMENT_MISSING,
+            );
+
+            let assignment = *dynamic_field::borrow<TeamAssignmentKey, TeamAssignment>(
+                &game.id,
+                TeamAssignmentKey { epoch, player },
+            );
+            assert!(assignment.active, E_TEAM_REGISTRATION_CANCELLED);
+            assert!(
+                !dynamic_field::exists_(
+                    &game.id,
+                    TeamGateClaimKey {
+                        epoch,
+                        team_id: assignment.team_id,
+                        shard_index,
+                    },
+                ),
+                E_TEAM_GATE_ALREADY_CLAIMED,
+            );
+
+            dynamic_field::add(
+                &mut game.id,
+                TeamGateClaimKey {
+                    epoch,
+                    team_id: assignment.team_id,
+                    shard_index,
+                },
+                player,
+            );
+
+            let roster = dynamic_field::borrow_mut<TeamRosterKey, TeamRoster>(
+                &mut game.id,
+                TeamRosterKey {
+                    epoch,
+                    team_id: assignment.team_id,
+                },
+            );
+            roster.completed_count = roster.completed_count + 1;
+        } else {
+            assert!(!gate.ball_collected, E_BALL_ALREADY_TAKEN);
+
+            if (hunt_mode == MODE_OBSTACLE_RUN) {
+                let collections = game.epoch_collections.borrow(epoch);
+                let player_count = if (collections.contains(player)) {
+                    *collections.borrow(player)
+                } else {
+                    0
+                };
+                assert!(shard_index == player_count, E_INVALID_GATE_ORDER);
+            };
+
+            let gate_mut = &mut game.shard_gates[shard_index];
+            gate_mut.ball_collected = true;
+            gate_mut.collector = player;
+
+            let gate_id = gate_mut.gate_id;
+            let gate_name = gate_mut.name;
+
+            let collections = game.epoch_collections.borrow_mut(epoch);
+            if (collections.contains(player)) {
+                let count = collections.borrow_mut(player);
+                *count = *count + 1;
+            } else {
+                collections.add(player, 1);
+            };
+
+            let shard_record = SinguShardRecord {
+                id: object::new(ctx),
+                epoch,
+                shard_index,
+                gate_id,
+                gate_name,
+                expires_at: game.hunt_end_time,
+                collector: player,
+                delivered: false,
+                delivered_at: 0,
+            };
+            let shard_token = singu_shard_token::mint(shard_treasury, 1, ctx);
+            singu_shard_token::transfer_to_owner(shard_treasury, shard_token, player, ctx);
+            transfer::transfer(shard_record, player);
+        };
+    }
+
+    #[test_only]
+    public(package) fun claim_decrypt_achievement_for_testing(
+        game: &mut GameState,
+        achievement_treasury: &mut AchievementTreasury,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        let now = clock::timestamp_ms(clock);
+        let player = ctx.sender();
+        let epoch = game.current_epoch;
+
+        assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
+        assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
+        assert!(get_hunt_mode(game) == MODE_DEEP_DECRYPT, E_INVALID_MODE);
+        assert!(
+            dynamic_field::exists_(&game.id, RegPlayerKey { epoch, player }),
+            E_NOT_REGISTERED,
+        );
+        assert!(
+            !dynamic_field::exists_(&game.id, EpochAchievementClaimKey { epoch, player }),
+            E_ALREADY_HAS_ACHIEVEMENT,
+        );
+
+        let winner_slots = get_winner_slots(game, epoch);
+        let winner_rank = {
+            let winner_count_ref = dynamic_field::borrow_mut<WinnerCountKey, u64>(
+                &mut game.id,
+                WinnerCountKey { epoch },
+            );
+            assert!(*winner_count_ref < winner_slots, E_ALL_WINNER_SLOTS_FILLED);
+            *winner_count_ref = *winner_count_ref + 1;
+            *winner_count_ref
+        };
+
+        if (!dynamic_field::exists_(&game.id, EpochWinnerKey { epoch })) {
+            dynamic_field::add(&mut game.id, EpochWinnerKey { epoch }, player);
+        };
+
+        mint_achievement_to(
+            game,
+            achievement_treasury,
+            player,
+            epoch,
+            now,
+            b"Singu Hunt award - Deep Decrypt",
+            b"Awarded to the fastest Deep Decrypt solvers who answered the daily official-history puzzle correctly.",
+            ctx,
+        );
+
+        event::emit(DeepDecryptSolved {
+            epoch,
+            player,
+            winner_rank,
+        });
+    }
+
+    #[test_only]
+    public(package) fun claim_team_achievement_for_testing(
+        game: &mut GameState,
+        achievement_treasury: &mut AchievementTreasury,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        let now = clock::timestamp_ms(clock);
+        let player = ctx.sender();
+        let epoch = game.current_epoch;
+
+        assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
+        assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
+        assert!(get_hunt_mode(game) == MODE_TEAM_RACE, E_NOT_TEAM_MODE);
+        assert!(
+            dynamic_field::exists_(&game.id, TeamAssignmentKey { epoch, player }),
+            E_TEAM_ASSIGNMENT_MISSING,
+        );
+
+        let assignment = *dynamic_field::borrow<TeamAssignmentKey, TeamAssignment>(
+            &game.id,
+            TeamAssignmentKey { epoch, player },
+        );
+        assert!(assignment.active, E_TEAM_REGISTRATION_CANCELLED);
+        let winner_slots = get_winner_slots(game, epoch);
+
+        let (member_1, member_2, member_3) = {
+            let roster = dynamic_field::borrow<TeamRosterKey, TeamRoster>(
+                &game.id,
+                TeamRosterKey {
+                    epoch,
+                    team_id: assignment.team_id,
+                },
+            );
+            assert!(roster.completed_count == game.required_singu_count, E_TEAM_INCOMPLETE);
+            assert!(!roster.finished, E_TEAM_ALREADY_FINISHED);
+            (roster.member_1, roster.member_2, roster.member_3)
+        };
+
+        let winner_rank = {
+            let winner_count_ref = dynamic_field::borrow_mut<WinnerCountKey, u64>(
+                &mut game.id,
+                WinnerCountKey { epoch },
+            );
+            assert!(*winner_count_ref < winner_slots, E_ALL_WINNER_SLOTS_FILLED);
+            *winner_count_ref = *winner_count_ref + 1;
+            *winner_count_ref
+        };
+
+        {
+            let roster = dynamic_field::borrow_mut<TeamRosterKey, TeamRoster>(
+                &mut game.id,
+                TeamRosterKey {
+                    epoch,
+                    team_id: assignment.team_id,
+                },
+            );
+            roster.finished = true;
+            roster.winner_rank = winner_rank;
+            roster.finished_at = now;
+        };
+
+        if (!dynamic_field::exists_(&game.id, EpochWinnerKey { epoch })) {
+            dynamic_field::add(&mut game.id, EpochWinnerKey { epoch }, player);
+        };
+
+        let nft_name = b"Singu Hunt award - Team Race";
+        let nft_description = b"Awarded to every member of a winning Team Race squad that completed all checkpoints and returned to base in time.";
+
+        mint_achievement_to(game, achievement_treasury, member_1, epoch, now, nft_name, nft_description, ctx);
+        mint_achievement_to(game, achievement_treasury, member_2, epoch, now, nft_name, nft_description, ctx);
+        mint_achievement_to(game, achievement_treasury, member_3, epoch, now, nft_name, nft_description, ctx);
+
+        event::emit(TeamFinished {
+            epoch,
+            team_id: assignment.team_id,
+            finisher: player,
+            winner_rank,
+        });
+    }
+
+    #[test_only]
+    public(package) fun new_admin_for_testing(ctx: &mut TxContext): AdminCap {
+        AdminCap { id: object::new(ctx) }
+    }
+
+    #[test_only]
+    public(package) fun transfer_admin_for_testing(admin: AdminCap, owner: address) {
+        transfer::public_transfer(admin, owner)
+    }
+
+    #[test_only]
+    public(package) fun share_game_for_testing(game: GameState) {
+        transfer::share_object(game)
+    }
+
+    #[test_only]
+    public(package) fun make_game_for_testing(ctx: &mut TxContext): GameState {
+        GameState {
+            id: object::new(ctx),
+            current_epoch: 0,
+            hunt_start_time: 0,
+            hunt_end_time: 0,
+            hunt_active: false,
+            start_gate: @0x0,
+            start_gate_name: b"",
+            end_gate: @0x0,
+            end_gate_name: b"",
+            required_singu_count: 2,
+            gate_pool: vector::empty(),
+            shard_gates: vector::empty(),
+            epoch_collections: table::new(ctx),
+            achievement_holders: table::new(ctx),
+            ticket_signer: @0x0,
+            ticket_signer_public_key: b"",
+            used_claim_tickets: table::new(ctx),
+            registration_fee_pool: balance::zero(),
+            total_achievements: 0,
+            total_hunts: 0,
+            total_lux_collected: 0,
+        }
+    }
+
+    #[test_only]
+    public(package) fun configure_basic_game(admin: &AdminCap, game: &mut GameState) {
+        set_start_gate(admin, game, @0x10, b"start");
+        set_end_gate(admin, game, @0x20, b"end");
+        set_required_singu_count(admin, game, 2);
+        set_pool_gate(admin, game, 0, @0x31, b"gate-1");
+        set_pool_gate(admin, game, 1, @0x32, b"gate-2");
+    }
+
+    #[test_only]
+    public(package) fun make_delivered_shards(
+        shard_treasury: &mut SinguShardTreasury,
+        player: address,
+        epoch: u64,
+        ctx: &mut TxContext,
+    ): (vector<SinguShardRecord>, vector<Token<SINGU_SHARD_TOKEN>>) {
+        let records = vector[
+            SinguShardRecord {
+                id: object::new(ctx),
+                epoch,
+                shard_index: 0,
+                gate_id: @0x31,
+                gate_name: b"gate-1",
+                expires_at: 10_000,
+                collector: player,
+                delivered: true,
+                delivered_at: 1,
+            },
+            SinguShardRecord {
+                id: object::new(ctx),
+                epoch,
+                shard_index: 1,
+                gate_id: @0x32,
+                gate_name: b"gate-2",
+                expires_at: 10_000,
+                collector: player,
+                delivered: true,
+                delivered_at: 2,
+            },
+        ];
+        let tokens = vector[
+            singu_shard_token::mint(shard_treasury, 1, ctx),
+            singu_shard_token::mint(shard_treasury, 1, ctx),
+        ];
+        (records, tokens)
+    }
+
+    #[test_only]
+    public(package) fun get_epoch_collection_count_for_testing(
+        game: &GameState,
+        epoch: u64,
+        player: address,
+    ): u64 {
+        let collections = game.epoch_collections.borrow(epoch);
+        if (collections.contains(player)) {
+            *collections.borrow(player)
+        } else {
+            0
+        }
+    }
+
+    #[test_only]
+    public(package) fun mark_record_delivered_for_testing(
+        shard_record: &mut SinguShardRecord,
+        delivered_at: u64,
+    ) {
+        shard_record.delivered = true;
+        shard_record.delivered_at = delivered_at;
+    }
+
+    #[test_only]
+    public(package) fun seed_three_player_team_registration_for_testing(
+        game: &mut GameState,
+        epoch: u64,
+        player_1: address,
+        player_2: address,
+        player_3: address,
+    ) {
+        *dynamic_field::borrow_mut<RegCountKey, u64>(&mut game.id, RegCountKey { epoch }) = 3;
+        dynamic_field::add(&mut game.id, RegPlayerKey { epoch, player: player_1 }, true);
+        dynamic_field::add(&mut game.id, RegPlayerKey { epoch, player: player_2 }, true);
+        dynamic_field::add(&mut game.id, RegPlayerKey { epoch, player: player_3 }, true);
+        dynamic_field::add(&mut game.id, RegOrderKey { epoch, order: 1 }, player_1);
+        dynamic_field::add(&mut game.id, RegOrderKey { epoch, order: 2 }, player_2);
+        dynamic_field::add(&mut game.id, RegOrderKey { epoch, order: 3 }, player_3);
+        dynamic_field::add(&mut game.id, RegPositionKey { epoch, player: player_1 }, 1u64);
+        dynamic_field::add(&mut game.id, RegPositionKey { epoch, player: player_2 }, 2u64);
+        dynamic_field::add(&mut game.id, RegPositionKey { epoch, player: player_3 }, 3u64);
+    }
+
+    #[test_only]
+    public(package) fun seed_registered_player_for_testing(
+        game: &mut GameState,
+        epoch: u64,
+        player: address,
+    ) {
+        dynamic_field::add(&mut game.id, RegPlayerKey { epoch, player }, true);
+    }
+
 }
