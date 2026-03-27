@@ -4,3 +4,8 @@ move-contracts/singuhunt/Published.toml
 *.log
 .DS_Store
 cloudflare-proxy/
+.move-test/
+hunt-public-dapp/
+ext/eveuluvme-site
+ext/singuhunt-app
+ext/singuvault-app

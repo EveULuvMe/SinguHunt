@@ -48,4 +48,27 @@ module singuhunt::achievement_token {
         let req = token::transfer(award, owner, ctx);
         token::confirm_with_treasury_cap(&mut treasury.cap, req, ctx);
     }
+
+    #[test_only]
+    public fun new_for_testing(ctx: &mut TxContext): AchievementTreasury {
+        let (treasury_cap, metadata) = coin::create_currency(
+            ACHIEVEMENT_TOKEN {},
+            0,
+            b"AWARD",
+            b"Singu Hunt Award",
+            b"Closed-loop achievement token for Singu Hunt winners",
+            option::none(),
+            ctx,
+        );
+        transfer::public_freeze_object(metadata);
+        AchievementTreasury {
+            id: object::new(ctx),
+            cap: treasury_cap,
+        }
+    }
+
+    #[test_only]
+    public fun transfer_for_testing(treasury: AchievementTreasury, owner: address) {
+        transfer::transfer(treasury, owner)
+    }
 }
