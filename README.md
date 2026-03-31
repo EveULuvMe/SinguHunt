@@ -36,6 +36,9 @@ Ticket-signature verification helpers.
 `move-contracts/singuhunt/sources/bulletin_board.move`
 Bulletin-board state used by the SSU-style in-world interaction surface.
 
+`move-contracts/singuhunt/tests/singuhunt_tests.move`
+Unit tests covering solo race, team race, deep decrypt, large arena, and obstacle run claim paths.
+
 ### Main Objects
 
 `GameState`
@@ -93,11 +96,14 @@ Player-side:
 - `buy_registration_pass`
 - `buy_registration_pass_eve<T>`
 - `activate_registration`
+- `register_for_hunt`
+- `register_for_hunt_with_character_id`
 - `collect_singu_shard`
 - `deliver_singu_shard`
 - `claim_achievement`
 - `claim_team_achievement`
 - `claim_decrypt_achievement`
+- `burn_expired_singu_shard`
 
 Bulletin-board:
 
@@ -173,6 +179,8 @@ If the package or shared objects are republished, update the frontend env values
 
 ### Build And Publish
 
+Building requires the `singuvault-contracts` repo cloned alongside this repo at the relative path `../../../singuvault-contracts/move-contracts/singuvault` (as referenced in `Move.toml`).
+
 ```bash
 cd move-contracts/singuhunt
 sui move build
@@ -236,6 +244,8 @@ Current `Move.toml` references:
 - `ACHIEVEMENT_TREASURY_ID`
 
 ### 部署
+
+編譯前需要在相對路徑 `../../../singuvault-contracts/move-contracts/singuvault` 有 `singuvault-contracts` 倉庫（`Move.toml` 的 local dependency）。
 
 ```bash
 cd move-contracts/singuhunt
