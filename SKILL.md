@@ -143,6 +143,10 @@ Base URL: `https://singuhunt-proxy.k66inthesky.workers.dev`
 
 Singu Hunt Home URL: `https://singuhunt-proxy.k66inthesky.workers.dev/singu-home?v=2`
 
+Landing Page (Production): `https://eveuluv.me/`
+
+Landing Page (Staging): `https://eveuluvme-site.pages.dev/`
+
 Singu Vault URL: `https://dapp-seven-henna.vercel.app/`
 
 ### Singu Hunt — Home (Start/End + Bulletin)
